@@ -6,6 +6,8 @@
 
 #define pr_fmt(fmt) "ftrace_hook: " fmt
 
+#include <linux/ftrace.h>
+#include <linux/kallsyms.h>
 #include <linux/kernel.h>
 #include <linux/linkage.h>
 #include <linux/module.h>
@@ -22,6 +24,8 @@ MODULE_LICENSE("GPL");
  * @func: pointer to the function to execute instead
  * @orig: pointer to the location where to save a pointer
  *        to the original function
+ * @addr: kernel address of the function entry
+ * @ops:  ftrace_ops state for this function hook
  *
  * The user should fill in only &name, &hook, &orig fields.
  * Other fields are considered implementation details.
@@ -30,7 +34,29 @@ struct fh_hook {
 	const char *name;
 	void *func;
 	void *orig;
+
+	unsigned long addr;
+	struct ftrace_ops ops;
 };
+
+static int fh_resolve_hook_address(struct fh_hook *hook)
+{
+	hook->addr = kallsyms_lookup_name(hook->name);
+
+	if (!hook->addr) {
+		pr_debug("unresolved symbol: %s\n", hook->name);
+		return -ENOENT;
+	}
+
+	*((unsigned long*) hook->orig) = hook->addr;
+
+	return 0;
+}
+
+static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
+		struct ftrace_ops *ops, struct pt_regs *regs)
+{
+}
 
 /**
  * fh_install_hooks() - register and enable a single hook
@@ -40,6 +66,36 @@ struct fh_hook {
  */
 int fh_install_hook(struct fh_hook *hook)
 {
+	int err;
+
+	err = fh_resolve_hook_address(hook);
+	if (err)
+		return err;
+
+	/*
+	 * We're going to modify %rip register so we'll need IPMODIFY flag
+	 * and SAVE_REGS as its prerequisite. ftrace's anti-recursion guard
+	 * is useless if we change %rip so disable it with RECURSION_SAFE.
+	 * We'll perform our own checks for trace function reentry.
+	 */
+	hook->ops.func = fh_ftrace_thunk;
+	hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
+	                | FTRACE_OPS_FL_RECURSION_SAFE
+	                | FTRACE_OPS_FL_IPMODIFY;
+
+	err = ftrace_set_filter_ip(&hook->ops, hook->addr, 0, 0);
+	if (err) {
+		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
+		return err;
+	}
+
+	err = register_ftrace_function(&hook->ops);
+	if (err) {
+		pr_debug("register_ftrace_function() failed: %d\n", err);
+		ftrace_set_filter_ip(&hook->ops, hook->addr, 1, 0);
+		return err;
+	}
+
 	return 0;
 }
 
@@ -49,6 +105,17 @@ int fh_install_hook(struct fh_hook *hook)
  */
 void fh_remove_hook(struct fh_hook *hook)
 {
+	int err;
+
+	err = unregister_ftrace_function(&hook->ops);
+	if (err) {
+		pr_debug("unregister_ftrace_function() failed: %d\n", err);
+	}
+
+	err = ftrace_set_filter_ip(&hook->ops, hook->addr, 1, 0);
+	if (err) {
+		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
+	}
 }
 
 /**
