@@ -12,11 +12,14 @@
 #include <linux/linkage.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/uaccess.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
+
+#define MAX_TASKS 8
 
 /*
  * struct fh_hook - describes a single hook to install
@@ -26,6 +29,8 @@ MODULE_LICENSE("GPL");
  *        to the original function
  * @addr: kernel address of the function entry
  * @ops:  ftrace_ops state for this function hook
+ * @task_lock:    protects &active_tasks
+ * @active_tasks: list of tasks currently executing our trace function
  *
  * The user should fill in only &name, &hook, &orig fields.
  * Other fields are considered implementation details.
@@ -37,7 +42,110 @@ struct fh_hook {
 
 	unsigned long addr;
 	struct ftrace_ops ops;
+
+	spinlock_t task_lock;
+	struct task_struct *active_tasks[MAX_TASKS];
 };
+
+static void fh_init_active_tasks(struct fh_hook *hook)
+{
+	spin_lock_init(&hook->task_lock);
+
+	memset(hook->active_tasks, 0, sizeof(hook->active_tasks));
+}
+
+static bool __fh_can_switch_rip(struct fh_hook *hook)
+{
+	size_t i;
+
+	/*
+	 * If the current task is already on the list then this
+	 * is a recursive activation of the original function
+	 * made the hook function.
+	 *
+	 * Remove the current task from the list to allow further
+	 * calls and deny hook function execution.
+	 */
+	for (i = 0; i < MAX_TASKS; i++) {
+		if (hook->active_tasks[i] == current) {
+			hook->active_tasks[i] = NULL;
+			return false;
+		}
+	}
+
+	/*
+	 * If the current task is not on the list then this
+	 * is the first activation of the ftrace function for
+	 * this task (initial entry).
+	 *
+	 * In this case add the current task to the active list.
+	 * Then allow the hook function to execute.
+	 */
+	for (i = 0; i < MAX_TASKS; i++) {
+		if (hook->active_tasks[i] == NULL) {
+			hook->active_tasks[i] = current;
+			return true;
+		}
+	}
+
+	/*
+	 * If the task list is already full then deny hook execution
+	 * for this particular activation. The hooked function will
+	 * execute unmodified. Drop a warning to the log so that
+	 * we know that the task list is probably too small.
+	 */
+	pr_notice("task limit overflow for '%s'\n", hook->name);
+
+	return false;
+}
+
+/**
+ * fh_can_switch_rip() - check the tick-tock status of the hook
+ * @hook: hook to check
+ *
+ * Returns: permission to reset %rip to the hook function.
+ */
+static bool fh_can_switch_rip(struct fh_hook *hook)
+{
+	bool permit = true;
+
+	/*
+	 * Note the non-irq spinlocks which means that you should not
+	 * hook functions which may be called from interrupt context.
+	 */
+
+	spin_lock(&hook->task_lock);
+
+	permit = __fh_can_switch_rip(hook);
+
+	spin_unlock(&hook->task_lock);
+
+	return permit;
+}
+
+/**
+ * fh_reset_hook() - allow the next hook call
+ * @hook: hook to reset
+ *
+ * You should call this function from the hook function which does not
+ * call the original implementation. It is necessary to allow the next
+ * call to be hooked.
+ */
+void fh_reset_hook(struct fh_hook *hook)
+{
+	size_t i;
+
+	spin_lock(&hook->task_lock);
+
+	for (i = 0; i < MAX_TASKS; i++) {
+		if (hook->active_tasks[i] == current) {
+			hook->active_tasks[i] = NULL;
+			break;
+		}
+	}
+
+	spin_unlock(&hook->task_lock);
+}
 
 static int fh_resolve_hook_address(struct fh_hook *hook)
 {
@@ -56,6 +164,10 @@ static int fh_resolve_hook_address(struct fh_hook *hook)
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
 		struct ftrace_ops *ops, struct pt_regs *regs)
 {
+	struct fh_hook *hook = container_of(ops, struct fh_hook, ops);
+
+	if (fh_can_switch_rip(hook))
+		regs->ip = (unsigned long) hook->func;
 }
 
 /**
@@ -67,6 +179,8 @@ static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
 int fh_install_hook(struct fh_hook *hook)
 {
 	int err;
+
+	fh_init_active_tasks(hook);
 
 	err = fh_resolve_hook_address(hook);
 	if (err)
