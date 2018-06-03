@@ -58,27 +58,12 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 	return 0;
 }
 
-/**
- * called_from_module() - check if address belongs to a module
- * @mod: module to check
- * @ip:  address to check
- *
- * Returns: true if &ip is in the address space of &mod.
- */
-static bool called_from_module(struct module *mod, unsigned long ip)
-{
-	void *low = mod->core_layout.base;
-	void *high = mod->core_layout.base + mod->core_layout.size;
-
-	return (low <= (void*) ip) && ((void*) ip < high);
-}
-
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
 		struct ftrace_ops *ops, struct pt_regs *regs)
 {
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
-	if (!called_from_module(THIS_MODULE, parent_ip))
+	if (!within_module(parent_ip, THIS_MODULE))
 		regs->ip = (unsigned long) hook->function;
 }
 
