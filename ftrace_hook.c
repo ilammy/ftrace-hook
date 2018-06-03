@@ -18,37 +18,42 @@ MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
 
-/*
- * struct fh_hook - describes a single hook to install
- * @name: name of the function to hook
- * @func: pointer to the function to execute instead
- * @orig: pointer to the location where to save a pointer
- *        to the original function
- * @addr: kernel address of the function entry
- * @ops:  ftrace_ops state for this function hook
+/**
+ * struct ftrace_hook - describes a single hook to install
+ *
+ * @name:     name of the function to hook
+ *
+ * @function: pointer to the function to execute instead
+ *
+ * @original: pointer to the location where to save a pointer
+ *            to the original function
+ *
+ * @address:  kernel address of the function entry
+ *
+ * @ops:      ftrace_ops state for this function hook
  *
  * The user should fill in only &name, &hook, &orig fields.
  * Other fields are considered implementation details.
  */
-struct fh_hook {
+struct ftrace_hook {
 	const char *name;
-	void *func;
-	void *orig;
+	void *function;
+	void *original;
 
-	unsigned long addr;
+	unsigned long address;
 	struct ftrace_ops ops;
 };
 
-static int fh_resolve_hook_address(struct fh_hook *hook)
+static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
-	hook->addr = kallsyms_lookup_name(hook->name);
+	hook->address = kallsyms_lookup_name(hook->name);
 
-	if (!hook->addr) {
+	if (!hook->address) {
 		pr_debug("unresolved symbol: %s\n", hook->name);
 		return -ENOENT;
 	}
 
-	*((unsigned long*) hook->orig) = hook->addr;
+	*((unsigned long*) hook->original) = hook->address;
 
 	return 0;
 }
@@ -71,10 +76,10 @@ static bool called_from_module(struct module *mod, unsigned long ip)
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
 		struct ftrace_ops *ops, struct pt_regs *regs)
 {
-	struct fh_hook *hook = container_of(ops, struct fh_hook, ops);
+	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
 	if (!called_from_module(THIS_MODULE, parent_ip))
-		regs->ip = (unsigned long) hook->func;
+		regs->ip = (unsigned long) hook->function;
 }
 
 /**
@@ -83,7 +88,7 @@ static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
  *
  * Returns: zero on success, negative error code otherwise.
  */
-int fh_install_hook(struct fh_hook *hook)
+int fh_install_hook(struct ftrace_hook *hook)
 {
 	int err;
 
@@ -102,7 +107,7 @@ int fh_install_hook(struct fh_hook *hook)
 	                | FTRACE_OPS_FL_RECURSION_SAFE
 	                | FTRACE_OPS_FL_IPMODIFY;
 
-	err = ftrace_set_filter_ip(&hook->ops, hook->addr, 0, 0);
+	err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
 	if (err) {
 		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
 		return err;
@@ -111,7 +116,7 @@ int fh_install_hook(struct fh_hook *hook)
 	err = register_ftrace_function(&hook->ops);
 	if (err) {
 		pr_debug("register_ftrace_function() failed: %d\n", err);
-		ftrace_set_filter_ip(&hook->ops, hook->addr, 1, 0);
+		ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
 		return err;
 	}
 
@@ -122,7 +127,7 @@ int fh_install_hook(struct fh_hook *hook)
  * fh_remove_hooks() - disable and unregister a single hook
  * @hook: a hook to remove
  */
-void fh_remove_hook(struct fh_hook *hook)
+void fh_remove_hook(struct ftrace_hook *hook)
 {
 	int err;
 
@@ -131,7 +136,7 @@ void fh_remove_hook(struct fh_hook *hook)
 		pr_debug("unregister_ftrace_function() failed: %d\n", err);
 	}
 
-	err = ftrace_set_filter_ip(&hook->ops, hook->addr, 1, 0);
+	err = ftrace_set_filter_ip(&hook->ops, hook->address, 1, 0);
 	if (err) {
 		pr_debug("ftrace_set_filter_ip() failed: %d\n", err);
 	}
@@ -146,7 +151,7 @@ void fh_remove_hook(struct fh_hook *hook)
  *
  * Returns: zero on success, negative error code otherwise.
  */
-int fh_install_hooks(struct fh_hook *hooks, size_t count)
+int fh_install_hooks(struct ftrace_hook *hooks, size_t count)
 {
 	int err;
 	size_t i;
@@ -172,7 +177,7 @@ error:
  * @hooks: array of hooks to remove
  * @count: number of hooks to remove
  */
-void fh_remove_hooks(struct fh_hook *hooks, size_t count)
+void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 {
 	size_t i;
 
@@ -244,17 +249,16 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 	return ret;
 }
 
-static struct fh_hook demo_hooks[] = {
-	{
-		.name = "sys_clone",
-		.func = fh_sys_clone,
-		.orig = &real_sys_clone,
-	},
-	{
-		.name = "sys_execve",
-		.func = fh_sys_execve,
-		.orig = &real_sys_execve,
-	},
+#define HOOK(_name, _function, _original)	\
+	{					\
+		.name = (_name),		\
+		.function = (_function),	\
+		.original = (_original),	\
+	}
+
+static struct ftrace_hook demo_hooks[] = {
+	HOOK("sys_clone",  fh_sys_clone,  &real_sys_clone),
+	HOOK("sys_execve", fh_sys_execve, &real_sys_execve),
 };
 
 static int fh_init(void)
