@@ -18,6 +18,13 @@ MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
 
+/*
+ * There are two ways of preventing vicious recursive loops when hooking:
+ * - detect recusion using function return address (USE_FENTRY_OFFSET = 0)
+ * - avoid recusion by jumping over the ftrace call (USE_FENTRY_OFFSET = 1)
+ */
+#define USE_FENTRY_OFFSET 0
+
 /**
  * struct ftrace_hook - describes a single hook to install
  *
@@ -53,7 +60,11 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 		return -ENOENT;
 	}
 
+#if USE_FENTRY_OFFSET
+	*((unsigned long*) hook->original) = hook->address + MCOUNT_INSN_SIZE;
+#else
 	*((unsigned long*) hook->original) = hook->address;
+#endif
 
 	return 0;
 }
@@ -63,8 +74,12 @@ static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
 {
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
+#if USE_FENTRY_OFFSET
+	regs->ip = (unsigned long) hook->function;
+#else
 	if (!within_module(parent_ip, THIS_MODULE))
 		regs->ip = (unsigned long) hook->function;
+#endif
 }
 
 /**
@@ -172,6 +187,14 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 
 #ifndef CONFIG_X86_64
 #error Currently only x86_64 architecture is supported
+#endif
+
+/*
+ * Tail call optimization can interfere with recursion detection based on
+ * return address on the stack. Disable it to avoid machine hangups.
+ */
+#if !USE_FENTRY_OFFSET
+#pragma GCC optimize("-fno-optimize-sibling-calls")
 #endif
 
 static asmlinkage long (*real_sys_clone)(unsigned long clone_flags,
