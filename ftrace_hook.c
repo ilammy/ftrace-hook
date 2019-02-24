@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
+#include <linux/version.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
@@ -257,9 +258,19 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 	return ret;
 }
 
+/*
+ * x86_64 kernels have a special naming convention for syscall entry points in newer kernels.
+ * That's what you end up with if an architecture has 3 (three) ABIs for system calls.
+ */
+#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+#define SYSCALL_NAME(name) ("__x64_" name)
+#else
+#define SYSCALL_NAME(name) (name)
+#endif
+
 #define HOOK(_name, _function, _original)	\
 	{					\
-		.name = (_name),		\
+		.name = SYSCALL_NAME(_name),	\
 		.function = (_function),	\
 		.original = (_original),	\
 	}
