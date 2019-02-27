@@ -190,6 +190,10 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #error Currently only x86_64 architecture is supported
 #endif
 
+#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+#define PTREGS_SYSCALL_STUBS 1
+#endif
+
 /*
  * Tail call optimization can interfere with recursion detection based on
  * return address on the stack. Disable it to avoid machine hangups.
@@ -198,6 +202,22 @@ void fh_remove_hooks(struct ftrace_hook *hooks, size_t count)
 #pragma GCC optimize("-fno-optimize-sibling-calls")
 #endif
 
+#ifdef PTREGS_SYSCALL_STUBS
+static asmlinkage long (*real_sys_clone)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_clone(struct pt_regs *regs)
+{
+	long ret;
+
+	pr_info("clone() before\n");
+
+	ret = real_sys_clone(regs);
+
+	pr_info("clone() after: %ld\n", ret);
+
+	return ret;
+}
+#else
 static asmlinkage long (*real_sys_clone)(unsigned long clone_flags,
 		unsigned long newsp, int __user *parent_tidptr,
 		int __user *child_tidptr, unsigned long tls);
@@ -217,6 +237,7 @@ static asmlinkage long fh_sys_clone(unsigned long clone_flags,
 
 	return ret;
 }
+#endif
 
 static char *duplicate_filename(const char __user *filename)
 {
@@ -234,6 +255,27 @@ static char *duplicate_filename(const char __user *filename)
 	return kernel_filename;
 }
 
+#ifdef PTREGS_SYSCALL_STUBS
+static asmlinkage long (*real_sys_execve)(struct pt_regs *regs);
+
+static asmlinkage long fh_sys_execve(struct pt_regs *regs)
+{
+	long ret;
+	char *kernel_filename;
+
+	kernel_filename = duplicate_filename((void*) regs->di);
+
+	pr_info("execve() before: %s\n", kernel_filename);
+
+	kfree(kernel_filename);
+
+	ret = real_sys_execve(regs);
+
+	pr_info("execve() after: %ld\n", ret);
+
+	return ret;
+}
+#else
 static asmlinkage long (*real_sys_execve)(const char __user *filename,
 		const char __user *const __user *argv,
 		const char __user *const __user *envp);
@@ -257,12 +299,13 @@ static asmlinkage long fh_sys_execve(const char __user *filename,
 
 	return ret;
 }
+#endif
 
 /*
  * x86_64 kernels have a special naming convention for syscall entry points in newer kernels.
  * That's what you end up with if an architecture has 3 (three) ABIs for system calls.
  */
-#if defined(CONFIG_X86_64) && (LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0))
+#ifdef PTREGS_SYSCALL_STUBS
 #define SYSCALL_NAME(name) ("__x64_" name)
 #else
 #define SYSCALL_NAME(name) (name)
