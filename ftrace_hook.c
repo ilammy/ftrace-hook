@@ -20,21 +20,25 @@ MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
 
-/*
- * Kprobes-based lookup for symbol names
- */
-unsigned long lookup_name(const char *name)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
+static unsigned long lookup_name(const char *name)
 {
 	struct kprobe kp = {
 		.symbol_name = name
 	};
 	unsigned long retval;
-	
+
 	if (register_kprobe(&kp) < 0) return 0;
 	retval = (unsigned long) kp.addr;
 	unregister_kprobe(&kp);
 	return retval;
 }
+#else
+static unsigned long lookup_name(const char *name)
+{
+	return kallsyms_lookup_name(name);
+}
+#endif
 
 /*
  * There are two ways of preventing vicious recursive loops when hooking:
