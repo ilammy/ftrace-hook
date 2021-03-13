@@ -14,10 +14,31 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <linux/kprobes.h>
 
 MODULE_DESCRIPTION("Example module hooking clone() and execve() via ftrace");
 MODULE_AUTHOR("ilammy <a.lozovsky@gmail.com>");
 MODULE_LICENSE("GPL");
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
+static unsigned long lookup_name(const char *name)
+{
+	struct kprobe kp = {
+		.symbol_name = name
+	};
+	unsigned long retval;
+
+	if (register_kprobe(&kp) < 0) return 0;
+	retval = (unsigned long) kp.addr;
+	unregister_kprobe(&kp);
+	return retval;
+}
+#else
+static unsigned long lookup_name(const char *name)
+{
+	return kallsyms_lookup_name(name);
+}
+#endif
 
 /*
  * There are two ways of preventing vicious recursive loops when hooking:
@@ -54,7 +75,7 @@ struct ftrace_hook {
 
 static int fh_resolve_hook_address(struct ftrace_hook *hook)
 {
-	hook->address = kallsyms_lookup_name(hook->name);
+	hook->address = lookup_name(hook->name);
 
 	if (!hook->address) {
 		pr_debug("unresolved symbol: %s\n", hook->name);
