@@ -45,9 +45,12 @@ static unsigned long lookup_name(const char *name)
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)
-struct ftrace_regs {
-	struct pt_regs regs;
-};
+#define ftrace_regs pt_regs
+
+static __always_inline struct pt_regs *ftrace_get_regs(struct ftrace_regs *fregs)
+{
+	return fregs;
+}
 #endif
 
 /*
@@ -102,15 +105,16 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 }
 
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
-		struct ftrace_ops *ops, struct ftrace_regs *regs)
+		struct ftrace_ops *ops, struct ftrace_regs *fregs)
 {
+	struct pt_regs *regs = ftrace_get_regs(fregs);
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
 #if USE_FENTRY_OFFSET
-	regs->regs.ip = (unsigned long)hook->function;
+	regs->ip = (unsigned long)hook->function;
 #else
 	if (!within_module(parent_ip, THIS_MODULE))
-		regs->regs.ip = (unsigned long)hook->function;
+		regs->ip = (unsigned long)hook->function;
 #endif
 }
 
