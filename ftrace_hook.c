@@ -40,6 +40,16 @@ static unsigned long lookup_name(const char *name)
 }
 #endif
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)
+#define FTRACE_OPS_FL_RECURSION FTRACE_OPS_FL_RECURSION_SAFE
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0)
+struct ftrace_regs {
+	struct pt_regs regs;
+};
+#endif
+
 /*
  * There are two ways of preventing vicious recursive loops when hooking:
  * - detect recusion using function return address (USE_FENTRY_OFFSET = 0)
@@ -92,15 +102,15 @@ static int fh_resolve_hook_address(struct ftrace_hook *hook)
 }
 
 static void notrace fh_ftrace_thunk(unsigned long ip, unsigned long parent_ip,
-		struct ftrace_ops *ops, struct pt_regs *regs)
+		struct ftrace_ops *ops, struct ftrace_regs *regs)
 {
 	struct ftrace_hook *hook = container_of(ops, struct ftrace_hook, ops);
 
 #if USE_FENTRY_OFFSET
-	regs->ip = (unsigned long) hook->function;
+	regs->regs.ip = (unsigned long)hook->function;
 #else
 	if (!within_module(parent_ip, THIS_MODULE))
-		regs->ip = (unsigned long) hook->function;
+		regs->regs.ip = (unsigned long)hook->function;
 #endif
 }
 
@@ -121,12 +131,12 @@ int fh_install_hook(struct ftrace_hook *hook)
 	/*
 	 * We're going to modify %rip register so we'll need IPMODIFY flag
 	 * and SAVE_REGS as its prerequisite. ftrace's anti-recursion guard
-	 * is useless if we change %rip so disable it with RECURSION_SAFE.
+	 * is useless if we change %rip so disable it with RECURSION.
 	 * We'll perform our own checks for trace function reentry.
 	 */
 	hook->ops.func = fh_ftrace_thunk;
 	hook->ops.flags = FTRACE_OPS_FL_SAVE_REGS
-	                | FTRACE_OPS_FL_RECURSION_SAFE
+	                | FTRACE_OPS_FL_RECURSION
 	                | FTRACE_OPS_FL_IPMODIFY;
 
 	err = ftrace_set_filter_ip(&hook->ops, hook->address, 0, 0);
